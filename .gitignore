@@ -9,9 +9,7 @@ node_modules/
 # Build output
 dist/
 
-data/
 .env
-.env.*
 .DS_Store
 
 

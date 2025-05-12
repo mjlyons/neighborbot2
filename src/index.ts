@@ -7,8 +7,8 @@ program
   .description('Organizes recommendations from neighborhood Whatsapp groups')
   .version('1.0.0');
 
-const main = async () => {
+const main = async (): Promise<void> => {
   program.parse(process.argv);
 };
 
-main();
+main().catch(console.error);
