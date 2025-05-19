@@ -12,4 +12,8 @@ dist/
 .env
 .DS_Store
 
+# For any runtime data
+data/
 
+# whatsapp-web.js runtime data
+.wwebjs*
