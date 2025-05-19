@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import { promises as fs } from 'fs';
-import Ical from 'ical.js';
 
 import { fetchMessages, loadMessagesFromFile } from './DownloadMessages.js';
 import { extractRecommendations, getLLMRequest } from './LLM.js';
@@ -83,17 +82,6 @@ program
     );
 
     console.log(`Updated ${filename} with new messages`);
-    process.exit(0);
-  });
-
-program
-  .command('vcard-test')
-  .description('Test vCard parsing')
-  .action(async () => {
-    console.log('Testing vCard parsing...');
-    const vcardData =
-      'BEGIN:VCARD\nVERSION:3.0\nN:;Handyman Angel;;;\nFN:Handyman Angel\nTEL;type=CELL;type=VOICE;waid=16175869570:+1 (617) 586-9570\nEND:VCARD';
-    console.log(JSON.stringify(Ical.parse(vcardData), null, 2));
     process.exit(0);
   });
 
