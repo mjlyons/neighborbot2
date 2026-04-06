@@ -4,6 +4,7 @@ import makeWASocket, {
   type Chat,
   type Contact,
   DisconnectReason,
+  fetchLatestWaWebVersion,
   useMultiFileAuthState,
   type WAMessage,
 } from '@whiskeysockets/baileys';
@@ -27,9 +28,11 @@ const connect = async (): Promise<ConnectedData> => {
   const messagesByJid = new Map<string, WAMessage[]>();
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestWaWebVersion();
 
   return new Promise<ConnectedData>((resolve, reject) => {
     const sock = makeWASocket({
+      version,
       auth: state,
       logger: silentLogger,
       syncFullHistory: true,
