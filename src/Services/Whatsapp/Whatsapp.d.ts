@@ -1,6 +1,18 @@
-import type WAWebJS from 'whatsapp-web.js';
+import type { WAMessage } from '@whiskeysockets/baileys';
+
+export type WhatsappChat = {
+  id: string; // JID string, e.g. "12345678901234567890@g.us"
+  name: string;
+};
+
+export type WhatsappContact = {
+  id: string;
+  pushname: string;
+  phoneNumber: string;
+};
 
 export type WhatsappService = {
-  // TODO: stop exposing the client
-  getClient: () => Promise<WAWebJS.Client>;
+  getChats: () => Promise<WhatsappChat[]>;
+  getChatMessages: (chatId: string) => Promise<WAMessage[]>;
+  getContact: (jid: string) => WhatsappContact | null;
 };
