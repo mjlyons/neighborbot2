@@ -33,6 +33,20 @@ const connect = async (
   const { version } = await fetchLatestWaWebVersion();
 
   return new Promise<ConnectedData>((resolve, reject) => {
+    let resolveTimer: ReturnType<typeof setTimeout> | null = null;
+    let resolved = false;
+
+    const scheduleResolve = (delayMs: number) => {
+      if (resolved) return;
+      if (resolveTimer) clearTimeout(resolveTimer);
+      resolveTimer = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        console.log(`Resolving with ${messagesByJid.size} chats worth of messages`);
+        resolve({ chats, contacts, messagesByJid });
+      }, delayMs);
+    };
+
     const sock = makeWASocket({
       version,
       auth: state,
@@ -61,22 +75,31 @@ const connect = async (
           messagesByJid.get(jid)!.push(msg);
         }
         if (isLatest) {
-          if (chats.size > 0 || messages.length > 0) {
-            console.log('History sync complete');
-            resolve({ chats, contacts, messagesByJid });
-          } else {
-            // Empty isLatest — chats arrive via chats.upsert; let the timeout resolve
-            console.log('Empty history sync, waiting for chats.upsert...');
-          }
+          // Wait 5s after isLatest for messages.upsert events to arrive
+          console.log('History sync isLatest received, waiting 5s for any pending messages...');
+          scheduleResolve(5000);
         }
       }
     );
+
+    // On reconnects with existing auth, new messages arrive via messages.upsert
+    // rather than messaging-history.set.
+    sock.ev.on('messages.upsert', ({ messages: newMsgs, type }) => {
+      console.log(`messages.upsert (${type}): ${newMsgs.length} messages`);
+      for (const msg of newMsgs) {
+        const jid = msg.key.remoteJid;
+        if (!jid) continue;
+        if (!messagesByJid.has(jid)) messagesByJid.set(jid, []);
+        messagesByJid.get(jid)!.push(msg);
+      }
+      // Reset timer so we wait for all batches to finish arriving
+      if (resolveTimer !== null) scheduleResolve(5000);
+    });
 
     sock.ev.on('chats.upsert', (newChats) => {
       for (const chat of newChats) {
         if (chat.id) chats.set(chat.id, chat);
       }
-      resolve({ chats, contacts, messagesByJid });
     });
 
     sock.ev.on('contacts.upsert', (newContacts) => {
@@ -93,23 +116,23 @@ const connect = async (
         toFile(qrPath, qr, { scale: 8 })
           .then(() => console.log(`QR code saved to ${qrPath} — open it and scan with WhatsApp`))
           .catch(() => {
-            // Fall back to terminal rendering if file write fails
             qrcode.generate(qr, { small: true });
           });
       }
 
       if (connection === 'open') {
         console.log('Whatsapp client is ready, waiting for history sync...');
-        // Safety net: resolve after grace period if isLatest never fires
-        setTimeout(() => resolve({ chats, contacts, messagesByJid }), 30000);
+        // Safety net: resolve after 5min if isLatest never fires
+        scheduleResolve(300000);
       }
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+        console.log(`Connection closed, status: ${statusCode}`);
         if (statusCode === DisconnectReason.loggedOut) {
           reject(new Error('WhatsApp logged out. Delete .baileys_auth and reconnect.'));
         } else if (statusCode === DisconnectReason.restartRequired) {
-          // Pass accumulated data through so it isn't lost on reconnect
+          console.log('Reconnecting due to restartRequired...');
           connect(chats, contacts, messagesByJid).then(resolve, reject);
         } else {
           reject(new Error(`WhatsApp disconnected (status ${statusCode})`));
