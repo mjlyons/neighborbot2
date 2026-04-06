@@ -1,8 +1,9 @@
 import type { Boom } from '@hapi/boom';
 import makeWASocket, {
   Browsers,
+  type Chat,
+  type Contact,
   DisconnectReason,
-  makeInMemoryStore,
   useMultiFileAuthState,
   type WAMessage,
 } from '@whiskeysockets/baileys';
@@ -14,17 +15,20 @@ import type { WhatsappContact, WhatsappService } from './Whatsapp.d.ts';
 const AUTH_DIR = '.baileys_auth';
 const silentLogger = pino({ level: 'silent' });
 
-type ConnectedService = {
-  store: ReturnType<typeof makeInMemoryStore>;
+type ConnectedData = {
+  chats: Map<string, Chat>;
+  contacts: Map<string, Contact>;
   messagesByJid: Map<string, WAMessage[]>;
 };
 
-const connect = async (): Promise<ConnectedService> => {
+const connect = async (): Promise<ConnectedData> => {
+  const chats = new Map<string, Chat>();
+  const contacts = new Map<string, Contact>();
   const messagesByJid = new Map<string, WAMessage[]>();
-  const store = makeInMemoryStore({ logger: silentLogger });
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-  return new Promise<ConnectedService>((resolve, reject) => {
+  return new Promise<ConnectedData>((resolve, reject) => {
     const sock = makeWASocket({
       auth: state,
       logger: silentLogger,
@@ -32,21 +36,40 @@ const connect = async (): Promise<ConnectedService> => {
       browser: Browsers.macOS('Desktop'),
     });
 
-    store.bind(sock.ev);
-
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('messaging-history.set', ({ messages, isLatest }) => {
-      for (const msg of messages) {
-        const jid = msg.key.remoteJid;
-        if (!jid) continue;
-        if (!messagesByJid.has(jid)) messagesByJid.set(jid, []);
-        messagesByJid.get(jid)!.push(msg);
+    sock.ev.on(
+      'messaging-history.set',
+      ({ chats: histChats, contacts: histContacts, messages, isLatest }) => {
+        for (const chat of histChats) {
+          if (chat.id) chats.set(chat.id, chat);
+        }
+        for (const contact of histContacts) {
+          contacts.set(contact.id, contact);
+        }
+        for (const msg of messages) {
+          const jid = msg.key.remoteJid;
+          if (!jid) continue;
+          if (!messagesByJid.has(jid)) messagesByJid.set(jid, []);
+          messagesByJid.get(jid)!.push(msg);
+        }
+        if (isLatest) {
+          console.log('History sync complete');
+          resolve({ chats, contacts, messagesByJid });
+        }
       }
-      if (isLatest) {
-        console.log('History sync complete');
-        resolve({ store, messagesByJid });
+    );
+
+    sock.ev.on('chats.upsert', (newChats) => {
+      for (const chat of newChats) {
+        if (chat.id) chats.set(chat.id, chat);
+      }
+    });
+
+    sock.ev.on('contacts.upsert', (newContacts) => {
+      for (const contact of newContacts) {
+        contacts.set(contact.id, contact);
       }
     });
 
@@ -61,7 +84,7 @@ const connect = async (): Promise<ConnectedService> => {
       if (connection === 'open') {
         console.log('Whatsapp client is ready');
         // Safety net: resolve after grace period if no history sync fires
-        setTimeout(() => resolve({ store, messagesByJid }), 5000);
+        setTimeout(() => resolve({ chats, contacts, messagesByJid }), 5000);
       }
 
       if (connection === 'close') {
@@ -77,7 +100,7 @@ const connect = async (): Promise<ConnectedService> => {
 };
 
 export const createWhatsappService = (): WhatsappService => {
-  let connected: ConnectedService | null = null;
+  let connected: ConnectedData | null = null;
   const connectedPromise = connect().then((result) => {
     connected = result;
     return result;
@@ -85,10 +108,10 @@ export const createWhatsappService = (): WhatsappService => {
 
   return {
     getChats: async (): Promise<Array<{ id: string; name: string }>> => {
-      const { store } = await connectedPromise;
-      return store.chats.all().map((chat) => ({
-        id: chat.id,
-        name: chat.name ?? chat.id,
+      const { chats } = await connectedPromise;
+      return Array.from(chats.values()).map((chat) => ({
+        id: chat.id ?? '',
+        name: chat.name ?? chat.id ?? '',
       }));
     },
 
@@ -97,10 +120,10 @@ export const createWhatsappService = (): WhatsappService => {
       return messagesByJid.get(chatId) ?? [];
     },
 
-    // Safe to call synchronously after any await on getChats/getChatMessages,
+    // Safe to call synchronously after awaiting getChats or getChatMessages,
     // since connected is populated once connectedPromise resolves.
     getContact: (jid: string): WhatsappContact | null => {
-      const c = connected?.store.contacts[jid];
+      const c = connected?.contacts.get(jid);
       if (!c) return null;
       return {
         id: c.id,
