@@ -9,6 +9,7 @@ import makeWASocket, {
   type WAMessage,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { toFile } from 'qrcode';
 import qrcode from 'qrcode-terminal';
 
 import type { WhatsappContact, WhatsappService } from './Whatsapp.d.ts';
@@ -22,11 +23,12 @@ type ConnectedData = {
   messagesByJid: Map<string, WAMessage[]>;
 };
 
-const connect = async (): Promise<ConnectedData> => {
-  const chats = new Map<string, Chat>();
-  const contacts = new Map<string, Contact>();
-  const messagesByJid = new Map<string, WAMessage[]>();
-
+// Accept existing maps so data accumulated before a restartRequired isn't lost
+const connect = async (
+  chats = new Map<string, Chat>(),
+  contacts = new Map<string, Contact>(),
+  messagesByJid = new Map<string, WAMessage[]>()
+): Promise<ConnectedData> => {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestWaWebVersion();
 
@@ -45,6 +47,7 @@ const connect = async (): Promise<ConnectedData> => {
     sock.ev.on(
       'messaging-history.set',
       ({ chats: histChats, contacts: histContacts, messages, isLatest }) => {
+        console.log(`History sync: ${histChats.length} chats, ${messages.length} messages`);
         for (const chat of histChats) {
           if (chat.id) chats.set(chat.id, chat);
         }
@@ -58,8 +61,13 @@ const connect = async (): Promise<ConnectedData> => {
           messagesByJid.get(jid)!.push(msg);
         }
         if (isLatest) {
-          console.log('History sync complete');
-          resolve({ chats, contacts, messagesByJid });
+          if (chats.size > 0 || messages.length > 0) {
+            console.log('History sync complete');
+            resolve({ chats, contacts, messagesByJid });
+          } else {
+            // Empty isLatest — chats arrive via chats.upsert; let the timeout resolve
+            console.log('Empty history sync, waiting for chats.upsert...');
+          }
         }
       }
     );
@@ -68,6 +76,7 @@ const connect = async (): Promise<ConnectedData> => {
       for (const chat of newChats) {
         if (chat.id) chats.set(chat.id, chat);
       }
+      resolve({ chats, contacts, messagesByJid });
     });
 
     sock.ev.on('contacts.upsert', (newContacts) => {
@@ -80,14 +89,19 @@ const connect = async (): Promise<ConnectedData> => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('QR RECEIVED');
-        qrcode.generate(qr, { small: true });
+        const qrPath = '/tmp/wa-qr.png';
+        toFile(qrPath, qr, { scale: 8 })
+          .then(() => console.log(`QR code saved to ${qrPath} — open it and scan with WhatsApp`))
+          .catch(() => {
+            // Fall back to terminal rendering if file write fails
+            qrcode.generate(qr, { small: true });
+          });
       }
 
       if (connection === 'open') {
-        console.log('Whatsapp client is ready');
-        // Safety net: resolve after grace period if no history sync fires
-        setTimeout(() => resolve({ chats, contacts, messagesByJid }), 5000);
+        console.log('Whatsapp client is ready, waiting for history sync...');
+        // Safety net: resolve after grace period if isLatest never fires
+        setTimeout(() => resolve({ chats, contacts, messagesByJid }), 30000);
       }
 
       if (connection === 'close') {
@@ -95,8 +109,8 @@ const connect = async (): Promise<ConnectedData> => {
         if (statusCode === DisconnectReason.loggedOut) {
           reject(new Error('WhatsApp logged out. Delete .baileys_auth and reconnect.'));
         } else if (statusCode === DisconnectReason.restartRequired) {
-          // WhatsApp requests a restart after initial pairing — reconnect transparently
-          connect().then(resolve, reject);
+          // Pass accumulated data through so it isn't lost on reconnect
+          connect(chats, contacts, messagesByJid).then(resolve, reject);
         } else {
           reject(new Error(`WhatsApp disconnected (status ${statusCode})`));
         }
