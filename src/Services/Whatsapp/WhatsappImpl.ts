@@ -94,6 +94,9 @@ const connect = async (): Promise<ConnectedData> => {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
         if (statusCode === DisconnectReason.loggedOut) {
           reject(new Error('WhatsApp logged out. Delete .baileys_auth and reconnect.'));
+        } else if (statusCode === DisconnectReason.restartRequired) {
+          // WhatsApp requests a restart after initial pairing — reconnect transparently
+          connect().then(resolve, reject);
         } else {
           reject(new Error(`WhatsApp disconnected (status ${statusCode})`));
         }
