@@ -17,3 +17,6 @@ data/
 
 # whatsapp-web.js runtime data
 .wwebjs*
+
+# Baileys session data (contains credentials)
+.baileys_auth/

@@ -1,7 +1,6 @@
-import { type Chat, type Contact, type Message } from 'whatsapp-web.js';
+import { getContentType, type WAMessage } from '@whiskeysockets/baileys';
 
-const MESSAGE_RECHECK_SECONDS = 10;
-const MESSAGE_MAX_RETRY_COUNT = 2;
+import type { WhatsappContact } from './Services/Whatsapp/Whatsapp.d.ts';
 
 export type ChatMessageV1 = {
   id: string;
@@ -19,100 +18,88 @@ export type ChatContactV1 = {
   phoneNumber: string;
 };
 
-export type ChatBodyTextV1 = {
-  text: string;
-};
-
-export type ChatVCardsV1 = {
-  vCards: string[];
-};
-
+export type ChatBodyTextV1 = { text: string };
+export type ChatVCardsV1 = { vCards: string[] };
 export type ChatBodyDeletedV1 = { isDeleted: true };
 
-const downloadAllMessages = async (chat: Chat): Promise<Message[]> => {
-  let messages = await chat.fetchMessages({ limit: Infinity });
-  let retryCount = 0;
-  while (true) {
-    console.log(
-      `Message Count: ${messages.length}, Earliest message: ${new Date(messages[0].timestamp * 1000).toLocaleString()}`
-    );
-    // Wait and see if more messages have appeared
-    console.log(`Waiting for ${MESSAGE_RECHECK_SECONDS} seconds to see if more messages appear...`);
-    await new Promise((resolve) => setTimeout(resolve, MESSAGE_RECHECK_SECONDS * 1000));
-    const newMessages = await chat.fetchMessages({ limit: 1e9 });
-    console.log(`Message count: ${messages.length} -> ${newMessages.length}`);
-    if (messages.length >= newMessages.length) {
-      retryCount++;
-      console.log(`No new messages, done: ${retryCount} retries`);
-      if (retryCount >= MESSAGE_MAX_RETRY_COUNT) {
-        console.log(`Max retries reached, giving up.`);
-        break;
-      }
-    } else {
-      retryCount = 0;
-      console.log(`Messages increased, giving more time to fetch more messages.`);
-      messages = newMessages;
-    }
-  }
+export const extractTextBody = (msg: WAMessage): string =>
+  msg.message?.conversation ??
+  msg.message?.extendedTextMessage?.text ??
+  msg.message?.imageMessage?.caption ??
+  msg.message?.videoMessage?.caption ??
+  '';
 
-  return messages;
+export const extractVCards = (msg: WAMessage): string[] => {
+  const single = msg.message?.contactMessage?.vcard;
+  if (single) return [single];
+  const multi = msg.message?.contactsArrayMessage?.contacts;
+  if (multi) return multi.map((c) => c.vcard ?? '').filter(Boolean);
+  return [];
 };
 
-const serializeContact = (contact: Contact): ChatContactV1 => {
-  return {
-    id: contact.id._serialized,
-    pushname: contact.pushname,
-    phoneNumber: contact.number,
-  };
-};
+export const isStubMessage = (msg: WAMessage): boolean =>
+  !msg.message && msg.messageStubType != null;
 
-const serializeBodyText = (text: string): ChatBodyTextV1 => {
-  return { text: text };
-};
+// proto.Message.ProtocolMessage.Type.REVOKE === 0
+export const isRevokedMessage = (msg: WAMessage): boolean =>
+  msg.message?.protocolMessage?.type === 0;
 
-const serializeVCards = (vCards: string[]): ChatVCardsV1 => {
-  return { vCards: vCards };
-};
+const serializeContact = (contact: WhatsappContact): ChatContactV1 => ({
+  id: contact.id,
+  pushname: contact.pushname,
+  phoneNumber: contact.phoneNumber,
+});
 
-const serializeWawMessage = async (wawMsg: Message): Promise<ChatMessageV1 | null> => {
-  if (wawMsg.type === 'e2e_notification') {
-    return null;
-  }
+const serializeMessage = (
+  wawMsg: WAMessage,
+  getContact: (jid: string) => WhatsappContact | null
+): ChatMessageV1 | null => {
+  if (isStubMessage(wawMsg)) return null;
 
-  const quotedMessage = wawMsg.hasQuotedMsg
-    ? await serializeWawMessage(await wawMsg.getQuotedMessage())
+  const quotedRaw = wawMsg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+  const quotedMessage = quotedRaw
+    ? serializeMessage({ key: { id: 'quoted' }, message: quotedRaw }, getContact)
     : null;
 
-  const contact = wawMsg.author ? serializeContact(await wawMsg.getContact()) : null;
+  const authorJid = wawMsg.participant ?? wawMsg.key.remoteJid ?? '';
+  const contactRaw = authorJid ? getContact(authorJid) : null;
+  const contact = contactRaw ? serializeContact(contactRaw) : null;
 
-  const serializedMsg: ChatMessageV1 = {
-    id: wawMsg.id._serialized,
-    body:
-      wawMsg.type === 'revoked'
-        ? { isDeleted: true }
-        : wawMsg.vCards.length > 0
-          ? serializeVCards(wawMsg.vCards)
-          : serializeBodyText(wawMsg.body),
-    timestamp: wawMsg.timestamp,
+  const vCards = extractVCards(wawMsg);
+  const msgType = wawMsg.message ? (getContentType(wawMsg.message) ?? 'unknown') : 'stub';
+  const hasMedia = !!(
+    wawMsg.message?.imageMessage ||
+    wawMsg.message?.videoMessage ||
+    wawMsg.message?.audioMessage ||
+    wawMsg.message?.documentMessage
+  );
+
+  return {
+    id: wawMsg.key.id ?? '',
+    body: isRevokedMessage(wawMsg)
+      ? { isDeleted: true }
+      : vCards.length > 0
+        ? { vCards }
+        : { text: extractTextBody(wawMsg) },
+    timestamp: Number(wawMsg.messageTimestamp),
     contact,
-    hasMedia: wawMsg.hasMedia,
+    hasMedia,
     quotedMessage,
-    wawMessageType: wawMsg.type,
+    wawMessageType: msgType,
   };
-
-  return serializedMsg;
 };
 
-export const fetchMessages = async (chat: Chat): Promise<ChatMessageV1[]> => {
-  const wawMessages = await downloadAllMessages(chat);
-  const serializedOrNullMessages = await Promise.all(wawMessages.map(serializeWawMessage));
-  const serializedMessages = serializedOrNullMessages.filter((msg) => msg !== null);
-  return serializedMessages;
-};
+export const fetchMessages = (
+  messages: WAMessage[],
+  getContact: (jid: string) => WhatsappContact | null
+): ChatMessageV1[] =>
+  messages
+    .map((msg) => serializeMessage(msg, getContact))
+    .filter((msg): msg is ChatMessageV1 => msg !== null);
 
 export const loadMessagesFromFile = async (filename: string): Promise<ChatMessageV1[]> => {
   const fs = await import('fs/promises');
   const fileContent = await fs.readFile(filename, 'utf-8');
-  const { serializedMessages } = JSON.parse(fileContent);
+  const { serializedMessages } = JSON.parse(fileContent) as { serializedMessages: ChatMessageV1[] };
   return serializedMessages;
 };

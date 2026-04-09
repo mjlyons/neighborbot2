@@ -18,11 +18,10 @@ program
   .action(async () => {
     console.log('Fetching all chats...');
     const whatsappService = createWhatsappService();
-    const client = await whatsappService.getClient();
-    const chats = await client.getChats();
+    const chats = await whatsappService.getChats();
     console.log('\nChats:');
     for (const chat of chats) {
-      console.log(`- ${chat.name} (ID: ${chat.id._serialized})`);
+      console.log(`- ${chat.name} (ID: ${chat.id})`);
     }
     process.exit(0);
   });
@@ -35,9 +34,11 @@ program
   .action(async (chatId: string, filename: string) => {
     console.log('Fetching messages...');
     const whatsappService = createWhatsappService();
-    const client = await whatsappService.getClient();
-    const chat = await client.getChatById(chatId);
-    const serializedMessages = await fetchMessages(chat);
+    const rawMessages = await whatsappService.getChatMessages(chatId);
+    const serializedMessages = fetchMessages(
+      rawMessages,
+      whatsappService.getContact.bind(whatsappService)
+    );
     await fs.writeFile(filename, JSON.stringify({ serializedMessages, schema: 1 }, null, 2));
 
     console.log(`Saved ${serializedMessages.length} messages to ${filename}`);
@@ -58,9 +59,11 @@ program
 
     console.log('Fetching new messages...');
     const whatsappService = createWhatsappService();
-    const client = await whatsappService.getClient();
-    const chat = await client.getChatById(chatId);
-    const newMessages = await fetchMessages(chat);
+    const rawMessages = await whatsappService.getChatMessages(chatId);
+    const newMessages = fetchMessages(
+      rawMessages,
+      whatsappService.getContact.bind(whatsappService)
+    );
 
     // Filter to only messages newer than our latest
     const newMessagesSince = newMessages.filter((m) => m.timestamp > latestTimestamp);
