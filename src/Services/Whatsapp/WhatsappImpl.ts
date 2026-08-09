@@ -15,7 +15,7 @@ import qrcode from 'qrcode-terminal';
 import type { WhatsappContact, WhatsappService } from './Whatsapp.d.ts';
 
 const AUTH_DIR = '.baileys_auth';
-const silentLogger = pino({ level: 'silent' });
+const silentLogger = pino({ level: process.env.WA_DEBUG ? 'trace' : 'silent' });
 
 type ConnectedData = {
   chats: Map<string, Chat>;
@@ -31,6 +31,7 @@ const connect = async (
 ): Promise<ConnectedData> => {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestWaWebVersion();
+  if (process.env.WA_DEBUG) console.log('Using WA Web version:', version);
 
   return new Promise<ConnectedData>((resolve, reject) => {
     let resolveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -52,7 +53,13 @@ const connect = async (
       auth: state,
       logger: silentLogger,
       syncFullHistory: true,
-      browser: Browsers.macOS('Desktop'),
+      // Use a browser-style sub-platform ('Chrome', not 'Desktop') — with
+      // syncFullHistory true, browser[1] === 'Desktop' makes Baileys
+      // advertise webSubPlatform DARWIN, which WhatsApp now rejects with a
+      // 428 (Connection Terminated) before ever emitting a QR, since the
+      // socket is really a WEB-platform build, not a native desktop client.
+      // See https://github.com/WhiskeySockets/Baileys/issues/2677
+      browser: Browsers.macOS('Chrome'),
     });
 
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
@@ -129,6 +136,7 @@ const connect = async (
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
         console.log(`Connection closed, status: ${statusCode}`);
+        if (process.env.WA_DEBUG) console.error('Full disconnect error:', lastDisconnect?.error);
         if (statusCode === DisconnectReason.loggedOut) {
           reject(new Error('WhatsApp logged out. Delete .baileys_auth and reconnect.'));
         } else if (statusCode === DisconnectReason.restartRequired) {
